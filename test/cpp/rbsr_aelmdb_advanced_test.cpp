@@ -4,9 +4,19 @@
   CSV column reference (one row per scenario/backend/outside-before-order):
 
   - scenario: Scenario name.
+  - scenario_family/scenario_i/magnitude: grouping helpers (family+index derived from scenario name, magnitude from --magnitude).
   - backend: Storage backend used for the reconciliation (Vector | AELMDBSlice | BTreeLMDB).
   - fullA/fullB: Total items stored in A and B (entire DB / entire Vector).
   - sliceA/sliceB: Items within the [slice_begin, slice_end) boundaries for A and B.
+
+  Scenario parameters (shape):
+  - slice_begin_ts, slice_end_ts, step_in_slice
+  - n_common_in_slice, n_a_only_in_slice, n_b_only_in_slice
+  - n_common_outside_before/after
+  - n_a_only_outside_before/after, n_b_only_outside_before/after
+
+  Expected correctness denominators:
+  - expected_have/expected_need: Expected counts based on persisted expected sets.
 
   Preparation (persisted in <root>/prep.meta, loaded by bench mode):
   - prep_open_ms: Time to open/create backing store used during preparation.
@@ -317,6 +327,92 @@ struct Expected {
   std::vector<std::uint64_t> have_u64;
   std::vector<std::uint64_t> need_u64;
 };
+
+static inline bool is_all_digits(const std::string& s) {
+  if (s.empty()) return false;
+  for (char c : s) if (c < '0' || c > '9') return false;
+  return true;
+}
+
+static inline std::pair<std::string, int> scenario_family_i(const std::string& name) {
+  // Split "foo_bar_12" => ("foo_bar", 12). If no numeric suffix, i=0 and family=name.
+  const auto pos = name.rfind('_');
+  if (pos == std::string::npos) return {name, 0};
+  const std::string suf = name.substr(pos + 1);
+  if (!is_all_digits(suf)) return {name, 0};
+  int i = 0;
+  for (char c : suf) i = i * 10 + int(c - '0');
+  return {name.substr(0, pos), i};
+}
+
+static inline void print_row_csv(const Scenario& sc,
+                                int magnitude,
+                                Backend backend,
+                                const Expected& exp,
+                                const Metrics& m) {
+  const auto [family, si] = scenario_family_i(sc.name);
+  const std::uint64_t expected_have = std::uint64_t(exp.have_u64.size());
+  const std::uint64_t expected_need = std::uint64_t(exp.need_u64.size());
+
+  std::cout
+    << sc.name << ',' << family << ',' << si << ',' << magnitude << ','
+    << backend_name(backend) << ','
+    << obefore_order_name(m.obefore_order) << ',' << m.commit_every << ','
+    << m.mapsize_mb << ',' << m.repeat_reconcile << ','
+
+    // scenario parameters (shape)
+    << sc.slice_begin_ts << ',' << sc.slice_end_ts << ',' << sc.step_in_slice << ','
+    << sc.n_common_in_slice << ',' << sc.n_a_only_in_slice << ',' << sc.n_b_only_in_slice << ','
+    << sc.n_common_outside_before << ',' << sc.n_common_outside_after << ','
+    << sc.n_a_only_outside_before << ',' << sc.n_a_only_outside_after << ','
+    << sc.n_b_only_outside_before << ',' << sc.n_b_only_outside_after << ','
+
+    // observed sizes
+    << m.fullA << ',' << m.fullB << ',' << m.sliceA << ',' << m.sliceB << ','
+
+    // expected correctness denominators + observed results
+    << expected_have << ',' << expected_need << ','
+    << m.have_count << ',' << m.need_count << ','
+
+    // timings
+    << std::fixed << std::setprecision(3)
+    << m.prep_total_ms << ',' << m.prep_open_ms << ',' << m.prep_populate_ms << ',' << m.prep_commit_ms << ','
+    << m.prep_seal_ms << ',' << m.prep_expected_ms << ',' << m.prep_serialize_ms << ','
+    << m.open_ms << ',' << m.build_ms << ',' << m.reconcile_ms << ',' << m.decode_sort_ms << ',' << m.total_bench_ms << ','
+
+    // protocol
+    << m.msg_count << ',' << m.bytes_a_to_b << ',' << m.bytes_b_to_a << ','
+
+    // disk
+    << m.A_apparent_bytes << ',' << m.A_alloc_bytes << ',' << m.A_used_bytes_est << ','
+    << m.B_apparent_bytes << ',' << m.B_alloc_bytes << ',' << m.B_used_bytes_est << ','
+
+    // layout
+    << m.layoutA.depth << ',' << m.layoutA.branch_pages << ',' << m.layoutA.leaf_pages << ','
+    << m.layoutA.overflow_pages << ',' << m.layoutA.entries << ',' << m.layoutA.last_pgno << ',' << m.layoutA.page_size << ','
+    << m.layoutB.depth << ',' << m.layoutB.branch_pages << ',' << m.layoutB.leaf_pages << ','
+    << m.layoutB.overflow_pages << ',' << m.layoutB.entries << ',' << m.layoutB.last_pgno << ',' << m.layoutB.page_size << ','
+
+    // memory
+    << m.rss_kb_before << ',' << m.rss_kb_after
+    << '\n';
+}
+
+static inline void print_header_csv() {
+  std::cout
+    << "scenario,scenario_family,scenario_i,magnitude,backend,obefore_order,commit_every,mapsize_mb,repeat_reconcile,"
+    << "slice_begin_ts,slice_end_ts,step_in_slice,"
+    << "n_common_in_slice,n_a_only_in_slice,n_b_only_in_slice,"
+    << "n_common_outside_before,n_common_outside_after,n_a_only_outside_before,n_a_only_outside_after,n_b_only_outside_before,n_b_only_outside_after,"
+    << "fullA,fullB,sliceA,sliceB,expected_have,expected_need,have,need,"
+    << "prep_total_ms,prep_open_ms,prep_populate_ms,prep_commit_ms,prep_seal_ms,prep_expected_ms,prep_serialize_ms,"
+    << "open_ms,build_ms,reconcile_ms,decode_sort_ms,total_bench_ms,"
+    << "msg_count,bytes_a_to_b,bytes_b_to_a,"
+    << "A_apparent_bytes,A_alloc_bytes,A_used_bytes_est,B_apparent_bytes,B_alloc_bytes,B_used_bytes_est,"
+    << "A_depth,A_branch_pages,A_leaf_pages,A_overflow_pages,A_entries,A_last_pgno,A_page_size,"
+    << "B_depth,B_branch_pages,B_leaf_pages,B_overflow_pages,B_entries,B_last_pgno,B_page_size,"
+    << "rss_kb_before,rss_kb_after\n" << std::flush;
+}
 
 // ---------- Dataset generation helpers (shared) ----------
 
@@ -1098,6 +1194,7 @@ static inline void prepare_case(const Scenario& sc,
 
 static inline void bench_case(const Scenario& sc,
                               const Expected& exp,
+                              int magnitude,
                               Backend backend,
                               OutsideBeforeOrder ob_order,
                               std::uint64_t commit_every,
@@ -1191,7 +1288,8 @@ static inline void bench_case(const Scenario& sc,
         sum_decode += td.ms();
         sum_total += tr.ms();
         if (rep == 0) {
-              }
+          assert_expected(have_u, need_u, exp, sc, backend);
+        }
       }
 
       m.decode_sort_ms = sum_decode / double(reps);
@@ -1201,21 +1299,7 @@ static inline void bench_case(const Scenario& sc,
     m.total_bench_ms = m.open_ms + m.build_ms + m.reconcile_ms;
 
     m.rss_kb_after = read_rss_kb_linux();
-
-    std::cout << sc.name << ',' << backend_name(backend) << ','
-              << obefore_order_name(m.obefore_order) << ',' << m.commit_every << ','
-              << m.mapsize_mb << ',' << m.repeat_reconcile << ','
-              << std::fixed << std::setprecision(3)
-              << m.prep_total_ms << ',' << m.prep_open_ms << ',' << m.prep_populate_ms << ',' << m.prep_commit_ms << ','
-              << m.prep_seal_ms << ',' << m.prep_expected_ms << ',' << m.prep_serialize_ms << ','
-              << m.open_ms << ',' << m.build_ms << ',' << m.reconcile_ms << ',' << m.decode_sort_ms << ',' << m.total_bench_ms << ','
-              << m.msg_count << ',' << m.bytes_a_to_b << ',' << m.bytes_b_to_a << ','
-              << m.have_count << ',' << m.need_count << ','
-              << m.A_apparent_bytes << ',' << m.A_alloc_bytes << ',' << m.A_used_bytes_est << ','
-              << m.B_apparent_bytes << ',' << m.B_alloc_bytes << ',' << m.B_used_bytes_est << ','
-              << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ','
-              << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ',' << 0 << ','
-              << m.rss_kb_before << ',' << m.rss_kb_after << '\n';
+    print_row_csv(sc, magnitude, backend, exp, m);
     return;
   }
 
@@ -1292,7 +1376,8 @@ static inline void bench_case(const Scenario& sc,
         sum_decode += td.ms();
         sum_total += tr.ms();
         if (rep == 0) {
-              }
+          assert_expected(have_u, need_u, exp, sc, backend);
+        }
       }
 
       m.decode_sort_ms = sum_decode / double(reps);
@@ -1302,23 +1387,7 @@ static inline void bench_case(const Scenario& sc,
     m.total_bench_ms = m.open_ms + m.build_ms + m.reconcile_ms;
 
     m.rss_kb_after = read_rss_kb_linux();
-
-    std::cout << sc.name << ',' << backend_name(backend) << ','
-              << obefore_order_name(m.obefore_order) << ',' << m.commit_every << ','
-              << m.mapsize_mb << ',' << m.repeat_reconcile << ','
-              << std::fixed << std::setprecision(3)
-              << m.prep_total_ms << ',' << m.prep_open_ms << ',' << m.prep_populate_ms << ',' << m.prep_commit_ms << ','
-              << m.prep_seal_ms << ',' << m.prep_expected_ms << ',' << m.prep_serialize_ms << ','
-              << m.open_ms << ',' << m.build_ms << ',' << m.reconcile_ms << ',' << m.decode_sort_ms << ',' << m.total_bench_ms << ','
-              << m.msg_count << ',' << m.bytes_a_to_b << ',' << m.bytes_b_to_a << ','
-              << m.have_count << ',' << m.need_count << ','
-              << m.A_apparent_bytes << ',' << m.A_alloc_bytes << ',' << m.A_used_bytes_est << ','
-              << m.B_apparent_bytes << ',' << m.B_alloc_bytes << ',' << m.B_used_bytes_est << ','
-              << m.layoutA.depth << ',' << m.layoutA.branch_pages << ',' << m.layoutA.leaf_pages << ','
-              << m.layoutA.overflow_pages << ',' << m.layoutA.entries << ',' << m.layoutA.last_pgno << ',' << m.layoutA.page_size << ','
-              << m.layoutB.depth << ',' << m.layoutB.branch_pages << ',' << m.layoutB.leaf_pages << ','
-              << m.layoutB.overflow_pages << ',' << m.layoutB.entries << ',' << m.layoutB.last_pgno << ',' << m.layoutB.page_size << ','
-              << m.rss_kb_before << ',' << m.rss_kb_after << '\n';
+    print_row_csv(sc, magnitude, backend, exp, m);
     return;
   }
 
@@ -1388,7 +1457,8 @@ static inline void bench_case(const Scenario& sc,
         sum_decode += td.ms();
         sum_total += tr.ms();
         if (rep == 0) {
-              }
+          assert_expected(have_u, need_u, exp, sc, backend);
+        }
       }
 
       m.decode_sort_ms = sum_decode / double(reps);
@@ -1398,23 +1468,7 @@ static inline void bench_case(const Scenario& sc,
     m.total_bench_ms = m.open_ms + m.build_ms + m.reconcile_ms;
 
     m.rss_kb_after = read_rss_kb_linux();
-
-    std::cout << sc.name << ',' << backend_name(backend) << ','
-              << obefore_order_name(m.obefore_order) << ',' << m.commit_every << ','
-              << m.mapsize_mb << ',' << m.repeat_reconcile << ','
-              << std::fixed << std::setprecision(3)
-              << m.prep_total_ms << ',' << m.prep_open_ms << ',' << m.prep_populate_ms << ',' << m.prep_commit_ms << ','
-              << m.prep_seal_ms << ',' << m.prep_expected_ms << ',' << m.prep_serialize_ms << ','
-              << m.open_ms << ',' << m.build_ms << ',' << m.reconcile_ms << ',' << m.decode_sort_ms << ',' << m.total_bench_ms << ','
-              << m.msg_count << ',' << m.bytes_a_to_b << ',' << m.bytes_b_to_a << ','
-              << m.have_count << ',' << m.need_count << ','
-              << m.A_apparent_bytes << ',' << m.A_alloc_bytes << ',' << m.A_used_bytes_est << ','
-              << m.B_apparent_bytes << ',' << m.B_alloc_bytes << ',' << m.B_used_bytes_est << ','
-              << m.layoutA.depth << ',' << m.layoutA.branch_pages << ',' << m.layoutA.leaf_pages << ','
-              << m.layoutA.overflow_pages << ',' << m.layoutA.entries << ',' << m.layoutA.last_pgno << ',' << m.layoutA.page_size << ','
-              << m.layoutB.depth << ',' << m.layoutB.branch_pages << ',' << m.layoutB.leaf_pages << ','
-              << m.layoutB.overflow_pages << ',' << m.layoutB.entries << ',' << m.layoutB.last_pgno << ',' << m.layoutB.page_size << ','
-              << m.rss_kb_before << ',' << m.rss_kb_after << '\n';
+    print_row_csv(sc, magnitude, backend, exp, m);
     return;
   }
 
@@ -1603,18 +1657,6 @@ static inline std::vector<Scenario> make_scenarios(int magnitude) {
   return out;
 }
 
-static inline void print_header_csv() {
-  std::cout
-    << "scenario,backend,obefore_order,commit_every,mapsize_mb,repeat_reconcile,"
-    << "prep_total_ms,prep_open_ms,prep_populate_ms,prep_commit_ms,prep_seal_ms,prep_expected_ms,prep_serialize_ms,"
-    << "open_ms,build_ms,reconcile_ms,decode_sort_ms,total_bench_ms,"
-    << "msg_count,bytes_a_to_b,bytes_b_to_a,have,need,"
-    << "A_apparent_bytes,A_alloc_bytes,A_used_bytes_est,B_apparent_bytes,B_alloc_bytes,B_used_bytes_est,"
-    << "A_depth,A_branch_pages,A_leaf_pages,A_overflow_pages,A_entries,A_last_pgno,A_page_size,"
-    << "B_depth,B_branch_pages,B_leaf_pages,B_overflow_pages,B_entries,B_last_pgno,B_page_size,"
-    << "rss_kb_before,rss_kb_after\n" << std::flush;
-}
-
 static inline Mode parse_mode(const std::string& s) {
   if (s == "init") return Mode::InitOnly;
   if (s == "bench") return Mode::BenchOnly;
@@ -1785,7 +1827,7 @@ int main(int argc, char** argv) {
           throw std::runtime_error("--isolate-bench requires a POSIX platform (fork/exec)");
 #endif
         } else {
-          bench_case(sc, exp, b, ob_order, commit_every, mapsize_mb, repeat_reconcile, root);
+          bench_case(sc, exp, magnitude, b, ob_order, commit_every, mapsize_mb, repeat_reconcile, root);
         }
       }
     };
