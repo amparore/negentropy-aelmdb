@@ -123,7 +123,7 @@ struct SliceAELMDB : negentropy::StorageBase {
 
     // Cached DBI schema.
     unsigned int agg_flags_ = 0;
-    unsigned int hash_offset_ = 0; // md_hash_offset (bytes)
+    int hash_offset_ = 0; // md_hash_offset (bytes)
 
     // Key codec derived from the DBI's configured hash offset.
     AELMDBKeyCodecTSID codec_;
@@ -313,7 +313,7 @@ private:
         }
     }
 
-    std::size_t init_schema_and_get_id_offset_() {
+    int init_schema_and_get_id_offset_() {
 #if !defined(MDB_AGG_MASK)
         throw negentropy::err("SliceAELMDB requires AELMDB aggregate support (MDB_AGG_MASK)");
 #else
@@ -329,12 +329,12 @@ private:
 
         // Fetch per-DB md_hash_offset via the AELMDB extension API.
         // This is part of the persistent MDB_db header and is configured with mdb_set_hash_offset().
-        unsigned int off = 0;
+        int off = 0;
         const int grc = ::mdb_get_hash_offset(txn, dbi.handle(), &off);
         if (grc != MDB_SUCCESS)
             throw negentropy::err("SliceAELMDB: mdb_get_hash_offset failed");
         hash_offset_ = off;
-        return std::size_t(hash_offset_);
+        return hash_offset_;
 #endif
     }
 
