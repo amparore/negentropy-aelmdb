@@ -29,12 +29,12 @@ namespace negentropy { namespace storage {
  *
  * It relies on AELMDB's aggregate/window extensions:
  *   - cursor.seek_rank(abs_rank)
- *   - dbi.window_fingerprint(..., MDB_agg_window& win, rel_begin, rel_end)
+ *   - dbi.window_aggregate(..., MDB_agg_window& win, rel_begin, rel_end)
  *   - dbi.window_rank(..., MDB_agg_window& win, key)
  *
  * Required DBI schema (checked at runtime in the constructor):
  *   - MDB_AGG_ENTRIES (for rank/select and slice mapping)
- *   - MDB_AGG_HASHSUM (for fingerprints)
+ *   - MDB_AGG_HASHSUM (for range aggregates)
  *   - MDB_AGG_HASHSOURCE_FROM_KEY (so the hashsum matches the Item id bytes)
  *
  * Hash offset / key layout:
@@ -147,7 +147,7 @@ struct SliceAELMDB : negentropy::StorageBase {
     uint64_t abs_hi_ = 0;
     uint64_t slice_size_ = 0;
 
-    // Cached slice mapping + fast fingerprints (combined window API).
+    // Cached slice mapping + fast range aggregates (combined window API).
     MDB_agg_window win_{}; // must be zero-initialized
     bool cached_full_fp_ = false;
     std::array<std::uint8_t, negentropy::ID_SIZE> full_hash_{};
@@ -269,15 +269,15 @@ struct SliceAELMDB : negentropy::StorageBase {
             return acc.getFingerprint(n);
         }
 
-        // Compute fingerprint directly in "rank space" within the precomputed window.
+        // Compute range aggregates directly in "rank space" within the precomputed window.
         const unsigned int range_flags = MDB_RANGE_LOWER_INCL;
-        lmdb::agg a = dbi.window_fingerprint(txn,
-                                             lowp_, nullptr,
-                                             highp_, nullptr,
-                                             range_flags,
-                                             win_,
-                                             uint64_t(begin),
-                                             uint64_t(end));
+        lmdb::agg a = dbi.window_aggregate(txn,
+                                           lowp_, nullptr,
+                                           highp_, nullptr,
+                                           range_flags,
+                                           win_,
+                                           uint64_t(begin),
+                                           uint64_t(end));
 
         if (!a.has_hashsum() || !a.has_entries())
             throw negentropy::err("SliceAELMDB: DBI missing HASHSUM/ENTRIES");
@@ -285,9 +285,10 @@ struct SliceAELMDB : negentropy::StorageBase {
             throw negentropy::err("SliceAELMDB: DBI must hash from key (MDB_AGG_HASHSOURCE_FROM_KEY)");
 
         if (a.mv_agg_entries != n)
-            throw negentropy::err("SliceAELMDB: fingerprint range count mismatch");
+            throw negentropy::err("SliceAELMDB: aggregate range count mismatch");
 
         std::memcpy(acc.buf, a.hashsum_data(), negentropy::ID_SIZE);
+        // range aggregate gets summarized into the Negentropy fingerprint
         return acc.getFingerprint(n);
     }
 
@@ -342,16 +343,16 @@ private:
         // Initialize the window once using the combined API. This computes:
         // - total_entries_ (total records in DB)
         // - abs_lo_/abs_hi_ for the slice [begin_key_, end_key_)
-        // - (optionally) the full-slice fingerprint, which we cache
+        // - (optionally) the full-slice aggregate, which we cache
 
         const unsigned int range_flags = MDB_RANGE_LOWER_INCL;
-        lmdb::agg full = dbi.window_fingerprint(txn,
-                                                lowp_, nullptr,
-                                                highp_, nullptr,
-                                                range_flags,
-                                                win_,
-                                                0,
-                                                MDB_AGG_WINDOW_END);
+        lmdb::agg full = dbi.window_aggregate(txn,
+                                              lowp_, nullptr,
+                                              highp_, nullptr,
+                                              range_flags,
+                                              win_,
+                                              0,
+                                              MDB_AGG_WINDOW_END);
 
         if (!full.has_entries())
             throw negentropy::err("SliceAELMDB: DBI missing MDB_AGG_ENTRIES");
