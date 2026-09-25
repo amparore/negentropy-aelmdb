@@ -15,6 +15,9 @@
 #ifndef MDB_AELMDB_VERSION
 #error "LMDB header is not the AELMDB fork."
 #endif
+#if MDB_AELMDB_VERSION < MDB_VERINT(0, 2, 0)
+#error "SliceAELMDB requires AELMDB >= 0.2.0."
+#endif
 
 namespace negentropy { namespace storage {
 
@@ -328,13 +331,8 @@ private:
             throw negentropy::err("SliceAELMDB: DBI missing MDB_AGG_HASHSOURCE_FROM_KEY");
 #endif
 
-        // Fetch per-DB md_hash_offset via the AELMDB extension API.
-        // This is part of the persistent MDB_db header and is configured with mdb_set_hash_offset().
-        int off = 0;
-        const int grc = ::mdb_get_hash_offset(txn, dbi.handle(), &off);
-        if (grc != MDB_SUCCESS)
-            throw negentropy::err("SliceAELMDB: mdb_get_hash_offset failed");
-        hash_offset_ = off;
+        // Fetch the persistent signed hash offset through the lmdb++ AELMDB API.
+        hash_offset_ = dbi.hash_offset(txn);
         return hash_offset_;
 #endif
     }
